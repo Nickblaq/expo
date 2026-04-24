@@ -52,8 +52,8 @@ def extract_video_info(url: str):
 
 
 @app.get("/extract")
-def extract_video(data: VideoRequest):
-    return extract_video_info(data.url)
+def extract_video(url: str):
+    return extract_video_info(url)
 
 
 @app.get("/")
