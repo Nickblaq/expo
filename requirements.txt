@@ -1,4 +1,4 @@
 fastapi
-uvicorn
+uvicorn[standard]
 yt-dlp
 pydantic
