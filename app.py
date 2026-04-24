@@ -1,6 +1,3 @@
-
-# app.py
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import yt_dlp
@@ -18,6 +15,7 @@ def extract_video_info(url: str):
         "skip_download": True,
         "nocheckcertificate": True,
         "format": "best",
+        "socket_timeout": 10,
     }
 
     try:
@@ -25,7 +23,11 @@ def extract_video_info(url: str):
             info = ydl.extract_info(url, download=False)
             info = ydl.sanitize_info(info)
 
-            # Extract only what you actually need (important for performance)
+            formats = [
+                f for f in info.get("formats", [])
+                if f.get("vcodec") != "none" and f.get("acodec") != "none"
+            ][:10]
+
             return {
                 "id": info.get("id"),
                 "title": info.get("title"),
@@ -37,16 +39,16 @@ def extract_video_info(url: str):
                     {
                         "format_id": f.get("format_id"),
                         "ext": f.get("ext"),
-                        "resolution": f.get("resolution"),
+                        "resolution": f.get("resolution") or f"{f.get('height')}p",
                         "filesize": f.get("filesize"),
                         "url": f.get("url"),
                     }
-                    for f in info.get("formats", [])
+                    for f in formats
                 ],
             }
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to extract video info")
 
 
 @app.post("/extract")
