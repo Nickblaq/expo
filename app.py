@@ -50,6 +50,10 @@ def extract_video_info(url: str):
     except Exception:
         raise HTTPException(status_code=400, detail="Failed to extract video info")
 
+@app.post("/extract")
+def extract_video_post(data: VideoRequest):
+    return extract_video_info(data.url)
+
 
 @app.get("/extract")
 def extract_video(url: str):
