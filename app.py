@@ -541,7 +541,9 @@ def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict
     }
 
 def _download_video(url: str) -> dict:
-    output_template = "%(title)s.%(ext)s"
+    uid = os.urandom(4).hex()
+    output_template = str(DOWNLOADS_DIR / f"%(title)s [{uid}].%(ext)s")
+
     file_path = {"value": None}
 
     def hook(d):
@@ -587,7 +589,7 @@ async def quick_download(req: QuickDownloadRequest):
         raise HTTPException(400, "Missing url param")
     try:
       loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, _download_video,, url)
+        result = await loop.run_in_executor(executor, _download_video,url)
         # result = await asyncio.to_thread( req.url)
 
         return {
