@@ -540,7 +540,7 @@ def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict
         "quick": True,
     }
 
-def download_video(url: str) -> dict:
+async def download_video(url: str) -> dict:
     output_template = "%(title)s.%(ext)s"
     file_path = {"value": None}
 
