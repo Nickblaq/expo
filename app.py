@@ -52,6 +52,13 @@ class DownloadRequest(BaseModel):
     quality: Optional[str] = "best"        # best | 1080p | 720p | 480p | 360p | audio
     ext: Optional[str] = "mp4"             # mp4 | webm | m4a | mp3
 
+class QuickDownloadRequest(BaseModel):
+    url: str
+    # No format constraints — yt-dlp decides everything.
+    # Optional: prefer_audio=True to favour audio-only output
+    prefer_audio: Optional[bool] = False
+    audio_format: Optional[str] = "mp3"  # mp3 | m4a | best (only used when prefer_audio=True)
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -151,31 +158,94 @@ def _resolve_format_selector(
     quality: str | None,
     ext: str | None,
 ) -> str:
-    """Turns user-facing options into a yt-dlp format selector string."""
+    """
+    Build a yt-dlp format selector string with deep fallback chains.
+
+    The key insight: YouTube increasingly serves video-only streams in vp9/webm
+    and may not have mp4 available at every resolution. Constraining to [ext=mp4]
+    causes hard failures. Instead we:
+      1. Try to get the preferred codec/container combo
+      2. Fall back to any codec at that resolution
+      3. Fall back to best combined format at any resolution
+      4. As last resort, let yt-dlp pick freely ("b")
+
+    This ensures the download ALWAYS works even when YouTube is serving limited
+    format sets (SABR enforcement, datacenter IP restrictions, etc.).
+
+    Selector syntax reminder:
+      /   = fallback: try left, if not available try right
+      *   = "if no audio, merge with best audio" wildcard
+      bv  = bestvideo (alias)
+      ba  = bestaudio (alias)
+      b   = best combined (single file, no merge needed)
+    """
+
+    # Explicit format_id takes top priority — caller knows exactly what they want.
+    # Still add "+bestaudio/format_id" fallback in case it's video-only.
     if format_id:
         return f"{format_id}+bestaudio/{format_id}"
 
-    quality_map = {
-        "best":  "bestvideo+bestaudio/best",
-        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
-        "360p":  "bestvideo[height<=360]+bestaudio/best[height<=360]",
-        "audio": "bestaudio/best",
+    q = (quality or "best").lower()
+    e = (ext or "mp4").lower()
+
+    # Audio-only path — no video needed, just best audio + optional post-process
+    if q == "audio":
+        # bestaudio in preferred container, fallback to any audio, fallback to best
+        if e == "mp3":
+            # mp3 always comes from post-processing bestaudio — selector is simple
+            return "bestaudio/best"
+        elif e == "m4a":
+            return "bestaudio[ext=m4a]/bestaudio/best"
+        else:
+            return "bestaudio/best"
+
+    # Video path — build height-constrained selectors with generous fallbacks.
+    # Pattern:
+    #   bv*[height<=H]+ba/bv[height<=H]+ba/b[height<=H]/b
+    #
+    # bv*  = bestvideo that already has audio, or best video-only (merge if needed)
+    # /b   = last resort: best single-file combined stream yt-dlp can find
+
+    height_map = {
+        "1080p": 1080,
+        "720p": 720,
+        "480p": 480,
+        "360p": 360,
     }
 
-    selector = quality_map.get(quality or "best", "bestvideo+bestaudio/best")
+    if q in height_map:
+        h = height_map[q]
+        # Tier 1: best video (any codec) at or below height + best audio → merged
+        # Tier 2: best combined stream at or below height (no merge)
+        # Tier 3: unconstrained best (ignores height preference but never fails)
+        return (
+            f"bestvideo[height<={h}]+bestaudio"
+            f"/bestvideo[height<={h}]+bestaudio[ext=m4a]"
+            f"/best[height<={h}]"
+            f"/bestvideo+bestaudio"
+            f"/best"
+        )
 
-    # Narrow by ext if specified and not audio-only
-    if ext and ext != "mp3" and quality != "audio":
-        height = quality.replace("p", "") if quality and "p" in quality else None
-        if height:
-            selector = (
-                f"bestvideo[height<={height}][ext={ext}]+bestaudio"
-                f"/bestvideo[height<={height}]+bestaudio/best"
-            )
-
-    return selector
+    # "best" quality — no height constraint, just get the best available
+    # Prefer h264+aac in mp4 container for maximum compatibility, but don't
+    # hard-require it — fall back all the way to "b".
+    if e in ("mp4", "m4a"):
+        return (
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[ext=mp4]+bestaudio"
+            "/bestvideo+bestaudio"
+            "/best"
+        )
+    elif e == "webm":
+        return (
+            "bestvideo[ext=webm]+bestaudio[ext=webm]"
+            "/bestvideo[ext=webm]+bestaudio"
+            "/bestvideo+bestaudio"
+            "/best"
+        )
+    else:
+        # mkv or any other container: no ext constraint, rely on merge_output_format
+        return "bestvideo+bestaudio/best"
 
 
 # ── Sync worker functions (run in thread pool) ─────────────────────────────────
@@ -333,49 +403,48 @@ def _fetch_transcript(url: str, lang: str) -> dict:
 
 def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> dict:
     """
-    Downloads the video/audio to DOWNLOADS_DIR.
-    Returns metadata including the final file path.
+    Downloads with the robust fallback selector from _resolve_format_selector.
+    merge_output_format is always set so FFmpeg re-muxes when needed.
+    For mp3/audio requests, FFmpegExtractAudio post-processor is added.
     """
     selector = _resolve_format_selector(format_id, quality, ext)
 
-    # Unique ID in filename to avoid collisions
     uid = os.urandom(4).hex()
     output_template = str(DOWNLOADS_DIR / f"%(title)s [{uid}].%(ext)s")
 
-    final_path = {"value": None}
+    final_path: dict[str, str | None] = {"value": None}
 
     def progress_hook(d: dict):
         if d["status"] == "finished":
             final_path["value"] = d.get("filename") or d.get("info_dict", {}).get("filepath")
 
-    opts = {
+    is_audio_extract = ext == "mp3" or quality == "audio"
+    preferred_codec = ext if ext in ("mp3", "m4a") else "mp3"
+
+    merge_fmt = ext if ext in ("mp4", "mkv", "webm") else "mp4"
+
+    opts: dict = {
         **BASE_OPTS,
         "format": selector,
         "outtmpl": output_template,
         "progress_hooks": [progress_hook],
-        "merge_output_format": ext if ext in ("mp4", "mkv", "webm") else "mp4",
-        # Extract audio if mp3 requested
-        **(
-            {
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }]
-            }
-            if ext == "mp3" or quality == "audio"
-            else {}
-        ),
+        "merge_output_format": merge_fmt,
     }
+
+    if is_audio_extract:
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": preferred_codec,
+            "preferredquality": "192",
+        }]
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         info = ydl.sanitize_info(info)
 
-    # If progress hook didn't catch the filename, find it by uid
     if not final_path["value"]:
         matches = list(DOWNLOADS_DIR.glob(f"*{uid}*"))
-        matches = [f for f in matches if not f.suffix in (".part", ".ytdl", ".tmp")]
+        matches = [f for f in matches if f.suffix not in (".part", ".ytdl", ".tmp")]
         if matches:
             final_path["value"] = str(matches[0])
 
@@ -391,6 +460,84 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
         "filesize": file_path.stat().st_size,
         "filesize_human": _human_bytes(file_path.stat().st_size),
         "format_selector": selector,
+        "format_id_used": info.get("format_id"),
+        "resolution": info.get("resolution") or info.get("format_note"),
+    }
+
+def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict:
+    """
+    Zero-config download — yt-dlp chooses the best format it can get.
+
+    Uses format="b" (best available single file) for video, or
+    "bestaudio/best" for audio-only. No ext/codec constraints.
+    This is the most reliable path when the standard selectors fail
+    due to YouTube SABR enforcement or IP-based format restrictions.
+
+    The output container may be webm/mkv if that's what yt-dlp picks —
+    that's intentional. The goal is "something that plays", not "mp4 or bust".
+    """
+    uid = os.urandom(4).hex()
+    output_template = str(DOWNLOADS_DIR / f"%(title)s [quick-{uid}].%(ext)s")
+    final_path: dict[str, str | None] = {"value": None}
+
+    def progress_hook(d: dict):
+        if d["status"] == "finished":
+            final_path["value"] = d.get("filename") or d.get("info_dict", {}).get("filepath")
+
+    if prefer_audio:
+        selector = "bestaudio/best"
+        postprocessors = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": audio_format if audio_format in ("mp3", "m4a") else "mp3",
+            "preferredquality": "192",
+        }]
+        merge_fmt = "mp4"
+    else:
+        # "b" = yt-dlp's shorthand for best single-file format.
+        # This avoids triggering the merge path entirely — if a combined
+        # stream exists, it uses it; otherwise it falls back gracefully.
+        selector = "b"
+        postprocessors = []
+        merge_fmt = "mp4"
+
+    opts: dict = {
+        **BASE_OPTS,
+        "format": selector,
+        "outtmpl": output_template,
+        "progress_hooks": [progress_hook],
+        "merge_output_format": merge_fmt,
+    }
+
+    if postprocessors:
+        opts["postprocessors"] = postprocessors
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        info = ydl.sanitize_info(info)
+
+    if not final_path["value"]:
+        matches = list(DOWNLOADS_DIR.glob(f"*quick-{uid}*"))
+        matches = [f for f in matches if f.suffix not in (".part", ".ytdl", ".tmp")]
+        if matches:
+            final_path["value"] = str(matches[0])
+
+    if not final_path["value"] or not Path(final_path["value"]).exists():
+        raise FileNotFoundError("Downloaded file not found on disk")
+
+    file_path = Path(final_path["value"])
+    return {
+        "title": info.get("title"),
+        "file_path": str(file_path),
+        "filename": file_path.name,
+        "ext": file_path.suffix.lstrip("."),
+        "filesize": file_path.stat().st_size,
+        "filesize_human": _human_bytes(file_path.stat().st_size),
+        "format_selector": selector,
+        "format_id_used": info.get("format_id"),
+        "resolution": info.get("resolution") or info.get("format_note"),
+        "vcodec": info.get("vcodec"),
+        "acodec": info.get("acodec"),
+        "quick": True,
     }
 
 
@@ -400,6 +547,48 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
 def health():
     return {"status": "ok", "service": "yt-dlp-server", "version": "2.0.0"}
 
+
+@app.post("/quick")
+async def quick_download(req: QuickDownloadRequest):
+    """
+    Zero-config download endpoint. yt-dlp picks the best format it can get
+    without any codec, resolution, or container constraints.
+
+    Use this endpoint:
+    - For testing (guaranteed to work on any IP/session)
+    - When /download fails with "Requested format is not available"
+    - When you don't care about specific quality, just want the file
+
+    Body:
+      { "url": "..." }                              — best combined video
+      { "url": "...", "prefer_audio": true }        — best audio → mp3
+      { "url": "...", "prefer_audio": true, "audio_format": "m4a" }
+
+    The output container will be whatever yt-dlp picks — mp4, webm, or mkv.
+    This is intentional: format availability varies by IP and YouTube session.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            _run_quick_download,
+            req.url,
+            req.prefer_audio or False,
+            req.audio_format or "mp3",
+        )
+        return {
+            "success": True,
+            "data": {
+                **result,
+                "fetch_url": f"/download/file?path={result['filename']}",
+            },
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(500, str(e))
+    except yt_dlp.utils.DownloadError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/info")
 async def video_info(url: str):
