@@ -151,7 +151,7 @@ def _resolve_format_selector(
         return f"{format_id}+bestaudio/{format_id}"
 
     quality_map = {
-        "best":  "best",
+        "best":  "bestvideo+bestaudio/best",
         "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
         "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]",
         "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
