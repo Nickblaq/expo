@@ -1,8 +1,4 @@
-
 # Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
-
 .youtube.com	TRUE	/	TRUE	0	__Secure-ROLLOUT_TOKEN	COLvoo301t79TRDG7pT9tJeUAxiplan9tJeUAw%3D%3D
 .youtube.com	TRUE	/	TRUE	0	__Secure-1PSIDTS	sidts-CjQBhkeRd82-CACgSJhsdZPBIKNj7o7aQm6DEzsWjmM7rVvzDS0eLcuCLEGXWKNcKYgM9JE5EAA
 .youtube.com	TRUE	/	TRUE	0	__Secure-3PSIDTS	sidts-CjQBhkeRd82-CACgSJhsdZPBIKNj7o7aQm6DEzsWjmM7rVvzDS0eLcuCLEGXWKNcKYgM9JE5EAA
