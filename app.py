@@ -540,6 +540,38 @@ def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict
         "quick": True,
     }
 
+def download_video(url: str) -> dict:
+    output_template = "%(title)s.%(ext)s"
+    file_path = {"value": None}
+
+    def hook(d):
+        if d["status"] == "finished":
+            file_path["value"] = d.get("filename")
+
+    ydl_opts = {
+        "format": "bestvideo+bestaudio/best",
+        "outtmpl": output_template,
+        "merge_output_format": "mp4",
+        "progress_hooks": [hook],
+        "quiet": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    if not file_path["value"]:
+        raise RuntimeError("Download failed or file not found")
+
+    file = Path(file_path["value"])
+
+    return {
+        "title": info.get("title"),
+        "file_path": str(file),
+        "filename": file.name,
+        "ext": file.suffix.lstrip("."),
+        "filesize": file.stat().st_size,
+    }
+
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
@@ -550,45 +582,33 @@ def health():
 
 @app.post("/quick")
 async def quick_download(req: QuickDownloadRequest):
-    """
-    Zero-config download endpoint. yt-dlp picks the best format it can get
-    without any codec, resolution, or container constraints.
-
-    Use this endpoint:
-    - For testing (guaranteed to work on any IP/session)
-    - When /download fails with "Requested format is not available"
-    - When you don't care about specific quality, just want the file
-
-    Body:
-      { "url": "..." }                              — best combined video
-      { "url": "...", "prefer_audio": true }        — best audio → mp3
-      { "url": "...", "prefer_audio": true, "audio_format": "m4a" }
-
-    The output container will be whatever yt-dlp picks — mp4, webm, or mkv.
-    This is intentional: format availability varies by IP and YouTube session.
-    """
     try:
         loop = asyncio.get_event_loop()
+
         result = await loop.run_in_executor(
             executor,
             _run_quick_download,
-            req.url,
-            req.prefer_audio or False,
-            req.audio_format or "mp3",
+            req.url,  # only argument now
         )
+
         return {
             "success": True,
             "data": {
                 **result,
-                "fetch_url": f"/download/file?path={result['filename']}",
+                "fetch_url": f"/download/file?path={result['file_path']}",
             },
         }
+
     except FileNotFoundError as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
     except yt_dlp.utils.DownloadError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @app.get("/info")
 async def video_info(url: str):
