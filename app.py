@@ -146,20 +146,16 @@ def _resolve_format_selector(
     quality: str | None,
     ext: str | None,
 ) -> str:
-    """Returns format selector that works with logged-in cookies"""
+    """
+    Downloads best available pre-merged format.
+    Uses format_id if provided, otherwise lets yt-dlp choose.
+    """
+    # If user specified a specific format_id, use it
     if format_id:
         return format_id
     
-    # Use 'best' instead of 'bestvideo+bestaudio' for cookie auth
-    quality_map = {
-        "best":  "best/best",  # Uses pre-merged formats only
-        "1080p": "best[height<=1080]/best",  # Falls back to best if 1080p unavailable
-        "720p":  "best[height<=720]/best",
-        "480p":  "best[height<=480]/best",
-        "360p":  "best[height<=360]/best",
-        "audio": "bestaudio/best",
-    }
-    
+    # For testing, always use "best" - picks pre-merged formats automatically
+    # This avoids the "bestvideo+bestaudio" merge that fails with cookies
     return "best"
 
 
