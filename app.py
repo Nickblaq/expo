@@ -583,20 +583,14 @@ def health():
 @app.post("/quick")
 async def quick_download(req: QuickDownloadRequest):
     try:
-        loop = asyncio.get_event_loop()
-
-        result = await loop.run_in_executor(
-            executor,
-            # _run_quick_download,
-             download_video,
-            req.url,  # only argument now
-        )
+        result = await asyncio.to_thread(download_video, req.url)
 
         return {
             "success": True,
             "data": {
                 **result,
                 "fetch_url": f"/download/file?path={result['file_path']}",
+            }file_path']}",
             },
         }
 
