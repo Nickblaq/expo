@@ -587,7 +587,8 @@ async def quick_download(req: QuickDownloadRequest):
 
         result = await loop.run_in_executor(
             executor,
-            _run_quick_download,
+            # _run_quick_download,
+             download_video,
             req.url,  # only argument now
         )
 
