@@ -69,11 +69,8 @@ BASE_OPTS = {
     "noplaylist": True,
     "socket_timeout": 15,
     "cookiefile": str(COOKIES_FILE),
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["web_safari"],  # Forces pre-merged formats
-        }
-    },
+  'js_runtimes': {'node': {}},    # Tells yt-dlp to use Node.js
+     'remote_components': ['ejs:python'],  # Points to the installed yt-dlp-ejs package
     "http_headers": {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
