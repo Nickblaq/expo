@@ -551,7 +551,7 @@ def _download_video(url: str) -> dict:
             file_path["value"] = d.get("filename")
 
     ydl_opts = {
-        "format": f"bestvideo+bestaudio/best",
+        "format": "bestvideo+bestaudio/best",
         "outtmpl": output_template,
         "merge_output_format": "mp4",
         "progress_hooks": [hook],
