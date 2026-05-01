@@ -1,4 +1,5 @@
 fastapi
 uvicorn[standard]
 yt-dlp
+ffmpeg
 pydantic
