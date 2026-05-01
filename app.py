@@ -151,17 +151,31 @@ def _resolve_format_selector(
     quality: str | None,
     ext: str | None,
 ) -> str:
-    """
-    Downloads best available pre-merged format.
-    Uses format_id if provided, otherwise lets yt-dlp choose.
-    """
-    # If user specified a specific format_id, use it
+    """Turns user-facing options into a yt-dlp format selector string."""
     if format_id:
-        return format_id
-    
-    # For testing, always use "best" - picks pre-merged formats automatically
-    # This avoids the "bestvideo+bestaudio" merge that fails with cookies
-    return "best"
+        return f"{format_id}+bestaudio/{format_id}"
+
+    quality_map = {
+        "best":  "bestvideo+bestaudio/best",
+        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+        "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
+        "360p":  "bestvideo[height<=360]+bestaudio/best[height<=360]",
+        "audio": "bestaudio/best",
+    }
+
+    selector = quality_map.get(quality or "best", "bestvideo+bestaudio/best")
+
+    # Narrow by ext if specified and not audio-only
+    if ext and ext != "mp3" and quality != "audio":
+        height = quality.replace("p", "") if quality and "p" in quality else None
+        if height:
+            selector = (
+                f"bestvideo[height<={height}][ext={ext}]+bestaudio"
+                f"/bestvideo[height<={height}]+bestaudio/best"
+            )
+
+    return selector
 
 
 # ── Sync worker functions (run in thread pool) ─────────────────────────────────
