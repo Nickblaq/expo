@@ -56,8 +56,8 @@ class QuickDownloadRequest(BaseModel):
     url: str
     # No format constraints — yt-dlp decides everything.
     # Optional: prefer_audio=True to favour audio-only output
-    prefer_audio: Optional[bool] = False
-    audio_format: Optional[str] = "mp3"  # mp3 | m4a | best (only used when prefer_audio=True)
+    # prefer_audio: Optional[bool] = False
+    # audio_format: Optional[str] = "mp3"  # mp3 | m4a | best (only used when prefer_audio=True)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
