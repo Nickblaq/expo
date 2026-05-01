@@ -160,7 +160,7 @@ def _resolve_format_selector(
         "audio": "bestaudio/best",
     }
     
-    return quality_map.get(quality or "best", "best/best")
+    return "best"
 
 
 # ── Sync worker functions (run in thread pool) ─────────────────────────────────
