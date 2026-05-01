@@ -35,7 +35,8 @@ from pydantic import BaseModel
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="yt-dlp server", version="2.0.0")
-
+# Set the path to your cookies file
+COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "./downloads"))
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +61,7 @@ BASE_OPTS = {
     "nocheckcertificate": True,
     "noplaylist": True,
     "socket_timeout": 15,
+    "cookiefile": str(COOKIES_FILE), 
     "http_headers": {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
