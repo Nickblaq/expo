@@ -61,7 +61,12 @@ BASE_OPTS = {
     "nocheckcertificate": True,
     "noplaylist": True,
     "socket_timeout": 15,
-    "cookiefile": str(COOKIES_FILE), 
+    "cookiefile": str(COOKIES_FILE),
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["web_safari"],  # Forces pre-merged formats
+        }
+    },
     "http_headers": {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
