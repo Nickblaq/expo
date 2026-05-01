@@ -146,31 +146,21 @@ def _resolve_format_selector(
     quality: str | None,
     ext: str | None,
 ) -> str:
-    """Turns user-facing options into a yt-dlp format selector string."""
+    """Returns format selector that works with logged-in cookies"""
     if format_id:
-        return f"{format_id}+bestaudio/{format_id}"
-
+        return format_id
+    
+    # Use 'best' instead of 'bestvideo+bestaudio' for cookie auth
     quality_map = {
-        "best":  "bestvideo+bestaudio/best",
-        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
-        "360p":  "bestvideo[height<=360]+bestaudio/best[height<=360]",
+        "best":  "best/best",  # Uses pre-merged formats only
+        "1080p": "best[height<=1080]/best",  # Falls back to best if 1080p unavailable
+        "720p":  "best[height<=720]/best",
+        "480p":  "best[height<=480]/best",
+        "360p":  "best[height<=360]/best",
         "audio": "bestaudio/best",
     }
-
-    selector = quality_map.get(quality or "best", "bestvideo+bestaudio/best")
-
-    # Narrow by ext if specified and not audio-only
-    if ext and ext != "mp3" and quality != "audio":
-        height = quality.replace("p", "") if quality and "p" in quality else None
-        if height:
-            selector = (
-                f"bestvideo[height<={height}][ext={ext}]+bestaudio"
-                f"/bestvideo[height<={height}]+bestaudio/best"
-            )
-
-    return selector
+    
+    return quality_map.get(quality or "best", "best/best")
 
 
 # ── Sync worker functions (run in thread pool) ─────────────────────────────────
