@@ -590,7 +590,6 @@ async def quick_download(req: QuickDownloadRequest):
             "data": {
                 **result,
                 "fetch_url": f"/download/file?path={result['file_path']}",
-            }file_path']}",
             },
         }
 
@@ -602,7 +601,6 @@ async def quick_download(req: QuickDownloadRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/info")
