@@ -587,7 +587,7 @@ async def quick_download(req: QuickDownloadRequest):
         raise HTTPException(400, "Missing url param")
     try:
       loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, download_video,, url)
+        result = await loop.run_in_executor(executor, _download_video,, url)
         # result = await asyncio.to_thread( req.url)
 
         return {
