@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
-yt-dlp
+yt-dlp[default]
 ffmpeg
 pydantic
+yt-dlp-ejs
