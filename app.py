@@ -540,7 +540,7 @@ def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict
         "quick": True,
     }
 
-async def download_video(url: str) -> dict:
+def _download_video(url: str) -> dict:
     output_template = "%(title)s.%(ext)s"
     file_path = {"value": None}
 
@@ -582,8 +582,13 @@ def health():
 
 @app.post("/quick")
 async def quick_download(req: QuickDownloadRequest):
+
+  if not url:
+        raise HTTPException(400, "Missing url param")
     try:
-        result = await asyncio.to_thread(download_video, req.url)
+      loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, download_video,, url)
+        # result = await asyncio.to_thread( req.url)
 
         return {
             "success": True,
