@@ -21,6 +21,8 @@ from typing import Optional
 import yt_dlp
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
+import tempfile
 from pydantic import BaseModel
 
 
@@ -246,23 +248,29 @@ async def download(req: DownloadRequest):
 
 
 @app.post("/quick")
-async def quick(req: QuickDownloadRequest):
-    loop = asyncio.get_event_loop()
+async def quick_download(req: QuickDownloadRequest):
+    def generate():
+        with tempfile.NamedTemporaryFile(delete=True) as tmp:
+            ydl_opts = {
+                **BASE_OPTS,
+                "format": "b",
+                "outtmpl": tmp.name,
+            }
 
-    result = await loop.run_in_executor(
-        executor,
-        _run_quick_download,
-        req.url,
-    )
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([req.url])
 
-    return {
-        "success": True,
-        "data": {
-            **result,
-            "fetch_url": f"/download/file?path={result['filename']}",
+            tmp.seek(0)
+            while chunk := tmp.read(8192):
+                yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": "attachment; filename=video.mp4"
         },
-    }
-
+    )
 
 @app.get("/download/file")
 async def serve(path: str):
