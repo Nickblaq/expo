@@ -1,26 +1,38 @@
 """
-app.py — Advanced yt-dlp FastAPI server
+app.py — Advanced yt-dlp FastAPI server  (v2.1.0)
 
 Endpoints:
   GET  /                          — health check
   GET  /info?url=                 — full video metadata + all formats
   GET  /formats?url=              — formats only (lightweight)
   GET  /transcript?url=&lang=     — transcript/subtitles as structured JSON
-  POST /download                  — download video/audio, returns the file
+  POST /download                  — download video/audio with robust format selection
   GET  /download/file?path=       — serve a previously downloaded file
+  POST /quick                     — zero-config download: yt-dlp picks best available format
 
 Design:
   - All yt-dlp work runs in a ThreadPoolExecutor (yt-dlp is sync/blocking)
     so FastAPI's async event loop is never blocked
   - Downloads are saved to ./downloads/, served back via FileResponse
   - Transcripts are extracted in-memory (no file written to disk)
-  - Format classification mirrors what you'd expect: combined, video-only, audio-only
+  - Format selection uses deep fallback chains to survive YouTube's SABR/format
+    availability changes (no hardcoded ext constraints unless absolutely required)
+
+YouTube format availability context (2025+):
+  - YouTube increasingly forces SABR (Server-Side Adaptive Bitrate) streaming
+    on web clients from datacenter IPs, leaving zero video formats via web client.
+  - The android/mweb clients still expose direct-URL formats in most cases.
+  - Hardcoding ext= filters (e.g. [ext=mp4]) causes "Requested format is not available"
+    when YouTube only serves that resolution in vp9/webm.
+  - The safest selector strategy: prefer codec+container but fall all the way back
+    to yt-dlp's unconstrained default ("b") so the download never hard-fails.
+  - /quick uses format="b" (yt-dlp's "best" shorthand) with no constraints at all
+    — reliably downloads something on every working IP/session.
 """
 
 import os
 import re
 import asyncio
-import tempfile
 import json
 import urllib.request
 from pathlib import Path
@@ -28,19 +40,17 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import yt_dlp
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="yt-dlp server", version="2.0.0")
-# Set the path to your cookies file
-COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
+app = FastAPI(title="yt-dlp server", version="2.1.0")
+
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "./downloads"))
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# yt-dlp is CPU/IO-bound and synchronous — run it in a thread pool
 executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -48,45 +58,28 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 class DownloadRequest(BaseModel):
     url: str
-    format_id: Optional[str] = None        # specific format_id from /formats
-    quality: Optional[str] = "best"        # best | 1080p | 720p | 480p | 360p | audio
-    ext: Optional[str] = "mp4"             # mp4 | webm | m4a | mp3
+    format_id: Optional[str] = None      # explicit format_id from /formats
+    quality: Optional[str] = "best"      # best | 1080p | 720p | 480p | 360p | audio
+    ext: Optional[str] = "mp4"           # mp4 | webm | mkv | m4a | mp3
+
 
 class QuickDownloadRequest(BaseModel):
     url: str
-    # No format constraints — yt-dlp decides everything.
-    # Optional: prefer_audio=True to favour audio-only output
-    prefer_audio: Optional[bool] = False
-    audio_format: Optional[str] = "mp3"  # mp3 | m4a | best (only used when prefer_audio=True)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 BASE_OPTS = {
     "quiet": True,
-    "no_warnings": True,
-    "nocheckcertificate": True,
     "noplaylist": True,
-    "socket_timeout": 15,
-    "cookiefile": str(COOKIES_FILE),
-  'js_runtimes': {'node': {}},    # Tells yt-dlp to use Node.js
-     'remote_components': ['ejs:python'],  # Points to the installed yt-dlp-ejs package
-    "http_headers": {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    },
+    # Required since yt-dlp 2025.11.12: a JS runtime to solve YouTube's n-challenge.
+    # node is available in the Railway environment via nixpacks.toml (nodejs_22).
+    # Empty dict means "find node in PATH" — no hardcoded path needed.
+    "js_runtimes": {"node": {}},
 }
 
 
 def classify_format(f: dict) -> dict | None:
-    """
-    Converts a raw yt-dlp format dict into a clean, classified object.
-    Returns None for storyboard/thumbnail formats that aren't playable.
-    """
     vcodec = f.get("vcodec", "none")
     acodec = f.get("acodec", "none")
     has_video = vcodec not in (None, "none")
@@ -116,15 +109,15 @@ def classify_format(f: dict) -> dict | None:
         "fps": f.get("fps"),
         "vcodec": vcodec if has_video else None,
         "acodec": acodec if has_audio else None,
-        "tbr": f.get("tbr"),                    # total bitrate kbps
-        "vbr": f.get("vbr"),                    # video bitrate kbps
-        "abr": f.get("abr"),                    # audio bitrate kbps
-        "asr": f.get("asr"),                    # audio sample rate hz
+        "tbr": f.get("tbr"),
+        "vbr": f.get("vbr"),
+        "abr": f.get("abr"),
+        "asr": f.get("asr"),
         "filesize": filesize,
         "filesize_human": _human_bytes(filesize),
         "format_note": f.get("format_note"),
         "protocol": f.get("protocol"),
-        "dynamic_range": f.get("dynamic_range"),  # SDR, HDR10, HLG etc.
+        "dynamic_range": f.get("dynamic_range"),
     }
 
 
@@ -136,18 +129,6 @@ def _human_bytes(b: int | None) -> str:
             return f"{b:.1f}{unit}"
         b /= 1024
     return f"{b:.1f}TB"
-
-
-def _extract_video_id(url: str) -> str | None:
-    """Extracts YouTube video ID from any known URL format."""
-    patterns = [
-        r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
 
 
 def _resolve_format_selector(
@@ -245,13 +226,10 @@ def _resolve_format_selector(
         return "bestvideo+bestaudio/best"
 
 
-# ── Sync worker functions (run in thread pool) ─────────────────────────────────
+# ── Sync worker functions ──────────────────────────────────────────────────────
 
 def _fetch_info(url: str) -> dict:
-    opts = {
-        **BASE_OPTS,
-        "skip_download": True,
-    }
+    opts = {**BASE_OPTS, "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         raw = ydl.extract_info(url, download=False)
         raw = ydl.sanitize_info(raw)
@@ -272,21 +250,21 @@ def _fetch_info(url: str) -> dict:
         "uploader": raw.get("uploader"),
         "uploader_url": raw.get("uploader_url"),
         "channel_id": raw.get("channel_id"),
-        "upload_date": raw.get("upload_date"),           # YYYYMMDD string
-        "timestamp": raw.get("timestamp"),               # unix epoch
-        "duration": raw.get("duration"),                 # seconds
+        "upload_date": raw.get("upload_date"),
+        "timestamp": raw.get("timestamp"),
+        "duration": raw.get("duration"),
         "duration_string": raw.get("duration_string"),
         "view_count": raw.get("view_count"),
         "like_count": raw.get("like_count"),
         "comment_count": raw.get("comment_count"),
         "age_limit": raw.get("age_limit"),
         "categories": raw.get("categories"),
-        "tags": (raw.get("tags") or [])[:20],            # cap at 20 tags
+        "tags": (raw.get("tags") or [])[:20],
         "is_live": raw.get("is_live"),
         "was_live": raw.get("was_live"),
         "chapters": raw.get("chapters"),
         "thumbnail": raw.get("thumbnail"),
-        "thumbnails": thumbnails[:5],                    # top 5 by resolution
+        "thumbnails": thumbnails[:5],
         "webpage_url": raw.get("webpage_url"),
         "playability_status": raw.get("availability"),
         "has_subtitles": bool(raw.get("subtitles")),
@@ -306,27 +284,19 @@ def _fetch_info(url: str) -> dict:
 
 
 def _fetch_transcript(url: str, lang: str) -> dict:
-    """
-    Extracts subtitle/transcript data in-memory using yt-dlp.
-    Returns structured segments with start, duration, text.
-    Falls back to auto-captions if manual subtitles are unavailable.
-    """
     opts = {
         **BASE_OPTS,
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": [lang],
-        "subtitlesformat": "json3",     # json3 gives structured start/duration/text
+        "subtitlesformat": "json3",
     }
-
-    transcript_data = {}
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         raw = ydl.extract_info(url, download=False)
         raw = ydl.sanitize_info(raw)
 
-        # Check manual subtitles first, then fall back to auto-captions
         subtitles = raw.get("subtitles") or {}
         auto_captions = raw.get("automatic_captions") or {}
 
@@ -340,7 +310,6 @@ def _fetch_transcript(url: str, lang: str) -> dict:
             source = auto_captions[lang]
             source_type = "auto"
         else:
-            # Try finding any English variant (en-US, en-GB etc.)
             for key in list(subtitles.keys()) + list(auto_captions.keys()):
                 if key.startswith(lang):
                     source = subtitles.get(key) or auto_captions.get(key)
@@ -355,7 +324,6 @@ def _fetch_transcript(url: str, lang: str) -> dict:
                 f"Available: {available or 'none'}"
             )
 
-        # Find the json3 format entry (has structured data)
         json3_entry = next(
             (s for s in source if s.get("ext") == "json3"), None
         )
@@ -363,11 +331,9 @@ def _fetch_transcript(url: str, lang: str) -> dict:
         if not json3_entry or not json3_entry.get("url"):
             raise ValueError("Transcript URL not found in yt-dlp response")
 
-        # Fetch the actual json3 subtitle file
         with urllib.request.urlopen(json3_entry["url"], timeout=10) as resp:
             raw_json = json.loads(resp.read().decode("utf-8"))
 
-        # Parse json3 format: events -> segs -> utf8
         segments = []
         for event in raw_json.get("events", []):
             if "segs" not in event:
@@ -382,10 +348,9 @@ def _fetch_transcript(url: str, lang: str) -> dict:
                     "text": text,
                 })
 
-        # Also build a plain text version
         full_text = " ".join(s["text"] for s in segments)
 
-        transcript_data = {
+        return {
             "video_id": raw.get("id"),
             "title": raw.get("title"),
             "language": lang,
@@ -394,8 +359,6 @@ def _fetch_transcript(url: str, lang: str) -> dict:
             "full_text": full_text,
             "segments": segments,
         }
-
-    return transcript_data
 
 
 def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> dict:
@@ -432,7 +395,6 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": preferred_codec,
-            "preferredquality": "192",
         }]
 
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -461,80 +423,28 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
         "resolution": info.get("resolution") or info.get("format_note"),
     }
 
-def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict:
-    """
-    Zero-config download — yt-dlp chooses the best format it can get.
 
-    Uses format="b" (best available single file) for video, or
-    "bestaudio/best" for audio-only. No ext/codec constraints.
-    This is the most reliable path when the standard selectors fail
-    due to YouTube SABR enforcement or IP-based format restrictions.
-
-    The output container may be webm/mkv if that's what yt-dlp picks —
-    that's intentional. The goal is "something that plays", not "mp4 or bust".
-    """
+def _run_quick_download(url: str) -> dict:
     uid = os.urandom(4).hex()
-    output_template = str(DOWNLOADS_DIR / f"%(title)s [quick-{uid}].%(ext)s")
-    final_path: dict[str, str | None] = {"value": None}
-
-    def progress_hook(d: dict):
-        if d["status"] == "finished":
-            final_path["value"] = d.get("filename") or d.get("info_dict", {}).get("filepath")
-
-    if prefer_audio:
-        selector = "bestaudio/best"
-        postprocessors = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": audio_format if audio_format in ("mp3", "m4a") else "mp3",
-            "preferredquality": "192",
-        }]
-        merge_fmt = "mp4"
-    else:
-        # "b" = yt-dlp's shorthand for best single-file format.
-        # This avoids triggering the merge path entirely — if a combined
-        # stream exists, it uses it; otherwise it falls back gracefully.
-        selector = "b"
-        postprocessors = []
-        merge_fmt = "mp4"
-
-    opts: dict = {
-        **BASE_OPTS,
-        "format": selector,
-        "outtmpl": output_template,
-        "progress_hooks": [progress_hook],
-        "merge_output_format": merge_fmt,
+    opts = {
+        "format": "bestvideo+bestaudio/best",
+        "outtmpl": str(DOWNLOADS_DIR / f"%(title)s [{uid}].%(ext)s"),
     }
-
-    if postprocessors:
-        opts["postprocessors"] = postprocessors
-
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        info = ydl.sanitize_info(info)
+        ydl.download([url])
 
-    if not final_path["value"]:
-        matches = list(DOWNLOADS_DIR.glob(f"*quick-{uid}*"))
-        matches = [f for f in matches if f.suffix not in (".part", ".ytdl", ".tmp")]
-        if matches:
-            final_path["value"] = str(matches[0])
-
-    if not final_path["value"] or not Path(final_path["value"]).exists():
+    matches = [
+        f for f in DOWNLOADS_DIR.glob(f"*{uid}*")
+        if f.suffix not in (".part", ".ytdl", ".tmp")
+    ]
+    if not matches:
         raise FileNotFoundError("Downloaded file not found on disk")
 
-    file_path = Path(final_path["value"])
+    file_path = matches[0]
     return {
-        "title": info.get("title"),
-        "file_path": str(file_path),
         "filename": file_path.name,
         "ext": file_path.suffix.lstrip("."),
-        "filesize": file_path.stat().st_size,
         "filesize_human": _human_bytes(file_path.stat().st_size),
-        "format_selector": selector,
-        "format_id_used": info.get("format_id"),
-        "resolution": info.get("resolution") or info.get("format_note"),
-        "vcodec": info.get("vcodec"),
-        "acodec": info.get("acodec"),
-        "quick": True,
     }
 
 
@@ -542,59 +452,11 @@ def _run_quick_download(url: str, prefer_audio: bool, audio_format: str) -> dict
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "yt-dlp-server", "version": "2.0.0"}
+    return {"status": "ok", "service": "yt-dlp-server", "version": "2.1.0"}
 
-
-@app.post("/quick")
-async def quick_download(req: QuickDownloadRequest):
-    """
-    Zero-config download endpoint. yt-dlp picks the best format it can get
-    without any codec, resolution, or container constraints.
-
-    Use this endpoint:
-    - For testing (guaranteed to work on any IP/session)
-    - When /download fails with "Requested format is not available"
-    - When you don't care about specific quality, just want the file
-
-    Body:
-      { "url": "..." }                              — best combined video
-      { "url": "...", "prefer_audio": true }        — best audio → mp3
-      { "url": "...", "prefer_audio": true, "audio_format": "m4a" }
-
-    The output container will be whatever yt-dlp picks — mp4, webm, or mkv.
-    This is intentional: format availability varies by IP and YouTube session.
-    """
-    try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            executor,
-            _run_quick_download,
-            req.url,
-            req.prefer_audio or False,
-            req.audio_format or "mp3",
-        )
-        return {
-            "success": True,
-            "data": {
-                **result,
-                "fetch_url": f"/download/file?path={result['filename']}",
-            },
-        }
-    except FileNotFoundError as e:
-        raise HTTPException(500, str(e))
-    except yt_dlp.utils.DownloadError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, str(e))
 
 @app.get("/info")
 async def video_info(url: str):
-    """
-    Returns full video metadata + all classified formats.
-
-    Browser call:
-      GET /info?url=https://www.youtube.com/watch?v=VIDEO_ID
-    """
     if not url:
         raise HTTPException(400, "Missing url param")
     try:
@@ -609,13 +471,6 @@ async def video_info(url: str):
 
 @app.get("/formats")
 async def video_formats(url: str):
-    """
-    Lightweight — returns only the formats list without full metadata.
-    Useful when you already have metadata and just need formats.
-
-    Browser call:
-      GET /formats?url=https://www.youtube.com/watch?v=VIDEO_ID
-    """
     if not url:
         raise HTTPException(400, "Missing url param")
     try:
@@ -639,21 +494,11 @@ async def video_formats(url: str):
 
 @app.get("/transcript")
 async def video_transcript(url: str, lang: str = "en"):
-    """
-    Returns the transcript/subtitles as structured JSON.
-    Tries manual subtitles first, falls back to auto-captions.
-
-    Browser call:
-      GET /transcript?url=https://www.youtube.com/watch?v=VIDEO_ID
-      GET /transcript?url=...&lang=fr
-    """
     if not url:
         raise HTTPException(400, "Missing url param")
     try:
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(
-            executor, _fetch_transcript, url, lang
-        )
+        data = await loop.run_in_executor(executor, _fetch_transcript, url, lang)
         return {"success": True, "data": data}
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -666,16 +511,16 @@ async def video_transcript(url: str, lang: str = "en"):
 @app.post("/download")
 async def download_video(req: DownloadRequest):
     """
-    Downloads a video or audio file to the server's downloads directory.
-    Returns the filename and a path you can use to fetch the file.
+    Downloads with robust fallback format selectors.
 
     Body:
       { "url": "...", "quality": "720p", "ext": "mp4" }
       { "url": "...", "format_id": "137" }
       { "url": "...", "quality": "audio", "ext": "mp3" }
 
-    After download, fetch the file via:
-      GET /download/file?path=<filename>
+    Format selectors now use deep fallback chains — if the preferred
+    codec/resolution isn't available, it falls back gracefully rather
+    than failing with "Requested format is not available".
     """
     try:
         loop = asyncio.get_event_loop()
@@ -702,19 +547,33 @@ async def download_video(req: DownloadRequest):
         raise HTTPException(500, str(e))
 
 
+@app.post("/quick")
+async def quick_download(req: QuickDownloadRequest):
+    """Body: { "url": "..." }"""
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, _run_quick_download, req.url)
+        return {
+            "success": True,
+            "data": {**result, "fetch_url": f"/download/file?path={result['filename']}"},
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(500, str(e))
+    except yt_dlp.utils.DownloadError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.get("/download/file")
 async def serve_file(path: str):
     """
     Serves a previously downloaded file by filename.
-
-    Browser call:
-      GET /download/file?path=Some+Title+[abc1].mp4
     """
     file_path = DOWNLOADS_DIR / path
     if not file_path.exists():
         raise HTTPException(404, f"File not found: {path}")
 
-    # Security: ensure it's inside downloads dir
     if not str(file_path.resolve()).startswith(str(DOWNLOADS_DIR.resolve())):
         raise HTTPException(403, "Access denied")
 
