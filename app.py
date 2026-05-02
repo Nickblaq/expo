@@ -427,6 +427,25 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
 
 def _run_quick_download(url: str) -> dict:
     uid = os.urandom(4).hex()
+
+   def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes", 0)
+            percent = (downloaded / total * 100) if total else 0
+
+            progress_store[download_id].update({
+                "status": "downloading",
+                "progress": round(percent, 2),
+                "text": f"{round(percent,2)}%",
+            })
+
+        elif d["status"] == "finished":
+            progress_store[download_id].update({
+                "status": "processing",
+                "progress": 95,
+                "text": "processing...",
+            })
     opts = {
       **BASE_OPTS,
         "format": "b",
