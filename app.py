@@ -71,11 +71,12 @@ class QuickDownloadRequest(BaseModel):
 
 BASE_OPTS = {
     "quiet": True,
+    "no_warnings": True,
     "noplaylist": True,
-    # Required since yt-dlp 2025.11.12: a JS runtime to solve YouTube's n-challenge.
-    # node is available in the Railway environment via nixpacks.toml (nodejs_22).
-    # Empty dict means "find node in PATH" — no hardcoded path needed.
-    "js_runtimes": {"node": {}},
+    "socket_timeout": 30,
+    "retries": 3,
+    "fragment_retries": 3,
+    "concurrent_fragment_downloads": 3,
 }
 
 
@@ -427,8 +428,12 @@ def _run_download(url: str, format_id: str | None, quality: str, ext: str) -> di
 def _run_quick_download(url: str) -> dict:
     uid = os.urandom(4).hex()
     opts = {
-        "format": "bestvideo+bestaudio/best",
+      **BASE_OPTS,
+        "format": "b",
         "outtmpl": str(DOWNLOADS_DIR / f"%(title)s [{uid}].%(ext)s"),
+        "progress_hooks": [hook],
+        'js_runtimes': {'node': {}},    # Tells yt-dlp to use Node.js
+        'remote_components': ['ejs:python'],  # Points to the installed yt-dlp-ejs package
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
