@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.railpack.com",
   "packages": {
-    "python": "3.16",
+    "python": "3.13",
     "node": "24.22",
     "deno": "latest"
   },
