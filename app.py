@@ -1,4 +1,3 @@
-
 import os
 import re
 import uuid
@@ -16,14 +15,13 @@ from pydantic import BaseModel
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="yt-music", version="1.0.0")
+app = FastAPI(title="yt-media", version="1.0.0")
 
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "./music"))
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "./cookies.txt"))
 
 executor = ThreadPoolExecutor(max_workers=4)
-
 
 # In-memory job store for album downloads
 # { job_id: { status, total, done, tracks: [...], error? } }
@@ -101,7 +99,10 @@ def _audio_opts(fmt: str, output_template: str) -> dict:
 # ── Worker functions ───────────────────────────────────────────────────────────
 
 def _search(query: str, limit: int = 10) -> list[dict]:
- 
+    """
+    Search YouTube Music using the music.youtube.com/search extractor.
+    Returns flat list of track dicts with id, title, uploader, duration, thumbnail.
+    """
     search_url = f"https://music.youtube.com/search?q={query}"
 
     opts = {
@@ -136,7 +137,11 @@ def _search(query: str, limit: int = 10) -> list[dict]:
     return results
 
 
-def _fetch_info(url: str) -> 
+def _fetch_info(url: str) -> dict:
+    """
+    Fetch metadata for a single track or an album/playlist.
+    Detects type from URL pattern.
+    """
     is_playlist = "playlist?list=" in url or ("list=" in url and "watch" not in url)
 
     opts = {
@@ -236,7 +241,10 @@ def _download_track(url: str, fmt: str) -> dict:
 
 
 def _download_album_worker(job_id: str, url: str, fmt: str):
-   
+    """
+    Background thread: fetches album info then downloads each track.
+    Updates jobs[job_id] incrementally so the polling endpoint sees progress.
+    """
     try:
         # Step 1 — fetch track list
         jobs[job_id]["status"] = "fetching"
