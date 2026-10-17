@@ -1,0 +1,9 @@
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	0	__Secure-ROLLOUT_TOKEN	CIjopoPyx-GqSRCa5bzAr6yXAxj3qc3Ar6yXAw%3D%3D
+.youtube.com	TRUE	/	TRUE	0	__Secure-BUCKET	CO4D
+.youtube.com	TRUE	/	TRUE	0	VISITOR_PRIVACY_METADATA	CgJORxIEGgAgLw%3D%3D
+.youtube.com	TRUE	/	TRUE	0	SOCS	CAISOAgREitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjYxMDE0LjA1X3AwGgVlbi1HQiACGgYIgPXK1gY
+.youtube.com	TRUE	/	TRUE	0	YSC	VEspSDMVqgU
+.youtube.com	TRUE	/	TRUE	0	VISITOR_INFO1_LIVE	1GA4Pwg-_RE
+.youtube.com	TRUE	/	TRUE	0	__Secure-YNID	CuEBCAUSkwEB8QZuZoBo2top-FqXYqkZ8NmcC_en7pdc8ia-0NueglNndVjm4D8AosUL17qz9jIXqgnfeLlyO_ERgUVs-lAnONmiqrHtyLEAFQTOigjAPBgddK3olzLHnCe6eM9vJA3AiNymrIWBrLk64h-F86OYU9AKix8ZMLNr2POxqc1nlJaqVFTGi5MR83x2lwzZ8ijtLk0oBTJFAd6pnU8iUkEd8-Ph8Vp9AXlmKmgWStT-goAhUVb1edS9FjW5x1MOoFYii9jrRroaD7Be5KUqA-kbndl5kYr_SW-TAhwA
+.youtube.com	TRUE	/	TRUE	0	__Secure-ROLLOUT_TOKEN	CI2k0YzZz9fyKhCM1ZXBr6yXAxjQ7Knt87-XAw%3D%3D
